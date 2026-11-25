@@ -9,6 +9,11 @@ Shape: a wedge. The board drops face-down into the tray (the bezel). The back is
 top edge, where the buttons are, and deep at the bottom edge, where the 18650 sits, so the
 case stands on its bottom edge and the cover is a flat plate that prints without supports.
 
+Details borrowed from 51m0 Lab's slab case for the same board (makerworld.com/en/models/615564,
+which only fits a flat LiPo): five flexing paddles in the top edge that press the side-facing
+buttons, a closed USB-C opening in the bottom edge, and a back that locates on corner posts.
+Positions along the edges were scaled from that model's photo of the board on a cutting mat.
+
 All coordinates are in millimetres, looking at the screen: x to the right, y up, origin at
 the bottom-left corner of the circuit board, z from the front of the bezel towards the back.
 
@@ -40,11 +45,17 @@ CELL_Y = 12.0          # measure: 18650 centre line, up from the board's bottom 
 CELL_H = 10.5          # measure: 18650 centre line, above the back of the board
 CELL_R = 9.3           # 18650 radius
 
-USB_X = 9.0            # measure: USB-C centre, from the board's left edge (screen side view)
-USB_W = 13.0           # notch width: fits a 12 mm plug shell
+USB_X = 9.7            # measure: USB-C centre, from the board's left edge (screen side view)
+USB_Z = 1.7            # measure: USB-C centre, above the back of the board
+USB_W, USB_H = 12.6, 6.8   # opening: clears a slim cable's plug shell
 
-BTN_X0, BTN_X1 = 0.26 * PCB_W, 0.64 * PCB_W   # measure: span of the five buttons
-BTN_DEPTH = 13.0       # slot height, down from the top edge of the board
+# Five side-facing buttons on the top edge; centres from the board's left edge (screen side view).
+BTN_X = [34.0, 41.0, 48.0, 55.0, 62.0]   # measure
+BTN_Z = 1.3            # measure: button plunger centre, above the back of the board
+PADDLE_W = 5.0         # width of each flexing paddle
+PADDLE_T = 1.0         # paddle thickness (the wall is thinned from outside)
+SLIT = 0.5             # gap around each paddle
+NUB = 0.8              # how far the paddle's bump reaches in past the wall
 
 # ------------------------------------------------------------------ case ----
 WALL = 2.0             # side walls
@@ -115,9 +126,39 @@ def slab(z_below, z_above):
     return yz_prism(pts, X0 - e, X1 + e)
 
 
-def usb_notch(grow=0.0):
-    return box(USB_X - USB_W / 2 - grow, Y0 - 1, USB_X + USB_W / 2 + grow, FIT + 3 + grow,
-               Z_BACK - 1.8, ZB + 20)
+def usb_hole():
+    """Rounded opening through the bottom wall, centred on the connector."""
+    zc = Z_BACK + USB_Z
+    cs = rect(USB_X - USB_W / 2, zc - USB_H / 2, USB_X + USB_W / 2, zc + USB_H / 2, USB_H / 2 - 0.01)
+    # extrude space (a, b, c) -> model (x = a, y = -c, z = b), so it runs through the wall
+    m = np.array([[1, 0, 0, 0], [0, 0, -1, 0.5], [0, 1, 0, 0]], dtype=float)
+    return Manifold.extrude(cs, WALL + FIT + 1.0).transform(m)
+
+
+def usb_relief():
+    """Space the cover's lip and post must leave around the connector and plug."""
+    return box(USB_X - USB_W / 2 - 1, -FIT - 0.1, USB_X + USB_W / 2 + 1, 6.0,
+               Z_BACK - 1, Z_BACK + USB_Z + USB_H / 2 + 1.5)
+
+
+def paddles():
+    """Returns (cut, add): slits and thinning to cut from the top wall, bumps to add back."""
+    y_in, y_out = PCB_H + FIT, PCB_H + FIT + WALL
+    z_hinge = Z_PCB                                # fixed end, by the bezel
+    z_free = min(Z_BACK + BTN_Z + 4.5, plane_z(Y1) - 1.4)   # free end, towards the back
+    zc = Z_BACK + BTN_Z
+    cut, add = Manifold(), Manifold()
+    for bx in BTN_X:
+        a, b = bx - PADDLE_W / 2, bx + PADDLE_W / 2
+        for sx in (a - SLIT, b):                                   # side slits
+            cut += box(sx, y_in - 0.1, sx + SLIT, y_out + 0.1, z_hinge, z_free + SLIT)
+        cut += box(a - SLIT, y_in - 0.1, b + SLIT, y_out + 0.1, z_free, z_free + SLIT)   # free end
+        cut += box(a - SLIT, y_in + PADDLE_T, b + SLIT, y_out + 0.1, z_hinge, z_free + SLIT)  # thin it
+        # Bump with a 45-degree underside so it prints without support (bezel is on the bed).
+        prof = [(y_in + 0.05, zc - 1.2 - NUB), (y_in - NUB, zc - 1.2), (y_in - NUB, zc + 1.2),
+                (y_in + 0.05, zc + 1.2)]
+        add += yz_prism(prof[::-1], bx - 1.6, bx + 1.6)
+    return cut, add
 
 
 def tray():
@@ -128,7 +169,8 @@ def tray():
                 PANEL_Y0 + PANEL_H + FIT, Z_PANEL, Z_PCB + 0.01)
     window = box(PANEL_X0 + WIN_LEFT, PANEL_Y0 + WIN_MARGIN_Y, PANEL_X0 + WIN_RIGHT,
                  PANEL_Y0 + PANEL_H - WIN_MARGIN_Y, -1, Z_PANEL + 0.01, 1.0)
-    return body - cavity - panel - window - usb_notch() - slab(0, 100)
+    cut, bumps = paddles()
+    return body - cavity - panel - window - usb_hole() - cut + bumps - slab(0, 100)
 
 
 def cover():
@@ -136,16 +178,15 @@ def cover():
     g = FIT - LIP_FIT   # lip sits just inside the tray walls
     ring = box(-g, -g, PCB_W + g, PCB_H + g, 0, ZB + 20, 0.6) - \
         box(-g + LIP_T, -g + LIP_T, PCB_W + g - LIP_T, PCB_H + g - LIP_T, -1, ZB + 21)
-    lip = (ring ^ slab(-LIP / math.cos(THETA), 0.01)) - usb_notch(0.6)
+    lip = (ring ^ slab(-LIP / math.cos(THETA), 0.01)) - usb_relief()
     part = plate + lip
     if POSTS:
         for px in (0.2, PCB_W - POST - 0.2):
             for py in (0.2, PCB_H - POST - 0.2):
                 post = box(px, py, px + POST, py + POST, Z_BACK + 0.2, ZB + 20)
                 part += post ^ slab(-100, 0.01)
-        part -= usb_notch(0.6) ^ slab(-100, -0.01)
-    buttons = box(BTN_X0, PCB_H - BTN_DEPTH, BTN_X1, PCB_H - 1.0, 0, ZB + 30, 2.0)
-    return part - buttons
+        part -= usb_relief()
+    return part
 
 
 def to_print_orientation(c):
