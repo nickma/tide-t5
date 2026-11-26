@@ -4,7 +4,8 @@ A tide display for the LilyGo T5 4.7" e-paper board (original ESP32 version, wit
 plus a printable case.
 
 The screen shows the current tide height and whether it is rising or falling, the next high and
-low, a curve for today with a "now" marker, and a table of upcoming highs and lows. Predictions
+low, a curve for today with a "now" marker, and a five-day outlook: one continuous curve with each
+day's highest high and lowest low, and minus tides marked. Predictions
 come from the free [NOAA CO-OPS API](https://api.tidesandcurrents.noaa.gov/api/prod/), so it
 covers US stations only.
 

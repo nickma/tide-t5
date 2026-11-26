@@ -319,29 +319,74 @@ static void drawChart(time_t now)
     }
 }
 
-static void drawTable(time_t now)
+/// Bottom strip: the coming days as one continuous curve, with each day's highest high and
+/// lowest low. Today is left out because the chart above already covers it.
+static void drawOutlook(time_t now)
 {
-    const int top = 366, colW = (EPD_WIDTH - 48) / TABLE_DAYS;
-    epd_draw_hline(24, top, EPD_WIDTH - 48, DARK, fb);
+    const int top = 366, x0 = 24, x1 = EPD_WIDTH - 24;
+    const int yTop = top + 48, yBot = top + 106;
+    const time_t start = localMidnight(now, 1), end = localMidnight(now, 1 + TABLE_DAYS);
+    const float span = (float)(end - start);
+    epd_draw_hline(x0, top, x1 - x0, DARK, fb);
+
+    // One vertical scale for all days, so a big tide looks big.
+    float lo = 0, hi = -1e9;
+    for (int i = 0; i < eventCount; i++) {
+        if (events[i].when < start - 8 * 3600 || events[i].when > end + 8 * 3600) continue;
+        lo = min(lo, events[i].feet);
+        hi = max(hi, events[i].feet);
+    }
+    if (hi <= lo) return;
+    auto xOf = [&](time_t t) { return x0 + (int)((t - start) / span * (x1 - x0)); };
+    auto yOf = [&](float h) { return yBot - (int)((h - lo) / (hi - lo) * (yBot - yTop)); };
+
+    int prevY = -1;
+    for (int x = x0; x <= x1; x++) {
+        float h = heightAt(start + (time_t)((float)(x - x0) / (x1 - x0) * span));
+        if (isnan(h)) {
+            prevY = -1;
+            continue;
+        }
+        int y = yOf(h);
+        epd_draw_vline(x, y, yBot - y, LIGHT, fb);
+        if (prevY >= 0)
+            for (int k = 0; k <= 1; k++) epd_draw_line(x - 1, prevY + k, x, y + k, BLACK, fb);
+        prevY = y;
+    }
+    // Zero (MLLW) line: anything dipping below it is a minus tide.
+    int yZero = yOf(0);
+    for (int x = x0; x < x1; x += 8) epd_draw_hline(x, yZero, 4, DARK, fb);
+
     for (int d = 0; d < TABLE_DAYS; d++) {
-        time_t start = localMidnight(now, d), end = localMidnight(now, d + 1);
-        int x = 24 + d * colW;
-        if (d > 0) epd_draw_vline(x - 10, top + 10, EPD_HEIGHT - top - 20, LIGHT, fb);
+        time_t dayStart = localMidnight(now, 1 + d), dayEnd = localMidnight(now, 2 + d);
+        int cx = xOf(dayStart), cw = xOf(dayEnd) - cx, tx = cx + (d == 0 ? 0 : 12);
+        if (d > 0) epd_draw_vline(cx, top + 10, EPD_HEIGHT - top - 14, MID, fb);
 
         struct tm tm;
-        localtime_r(&start, &tm);
+        localtime_r(&dayStart, &tm);
         char day[16];
         strftime(day, sizeof day, "%a %e", &tm);
-        text(&Roboto12, d == 0 ? String("Today") : String(day), x, top + 34);
+        text(&Roboto12, d == 0 ? String("Tomorrow") : String(day), tx, top + 32);
 
-        int y = top + 66;
-        for (int i = 0; i < eventCount && y < EPD_HEIGHT; i++) {
+        const TideEvent *best[2] = {nullptr, nullptr};   // highest high, lowest low
+        for (int i = 0; i < eventCount; i++) {
             const TideEvent &e = events[i];
-            if (e.when < start || e.when >= end) continue;
-            arrow(x, y - 16, 14, e.high, e.high ? BLACK : DARK);
-            text(&Roboto12, timeText(e.when, true), x + 22, y);
-            text(&Roboto12, heightText(e.feet, false), x + colW - 24, y, RIGHT);
-            y += 30;
+            if (e.when < dayStart || e.when >= dayEnd) continue;
+            const TideEvent *&b = best[e.high ? 0 : 1];
+            if (!b || (e.high ? e.feet > b->feet : e.feet < b->feet)) b = &e;
+        }
+        int y = top + 138;
+        for (const TideEvent *e : best) {
+            if (e) {
+                // Mark it on the curve; a minus tide gets a solid dot.
+                int px = xOf(e->when), py = yOf(e->feet);
+                epd_fill_circle(px, py, 5, BLACK, fb);
+                if (e->feet >= 0) epd_fill_circle(px, py, 2, WHITE, fb);
+                arrow(tx, y - 16, 14, e->high, e->high ? BLACK : DARK);
+                text(&Roboto12, timeText(e->when, true), tx + 22, y);
+                text(&Roboto12, heightText(e->feet, false), cx + cw - 12, y, RIGHT);
+            }
+            y += 28;
         }
     }
 }
@@ -375,7 +420,7 @@ static void drawTides(float volts)
     drawHeader(now, volts);
     drawNowPanel(now);
     drawChart(now);
-    drawTable(now);
+    drawOutlook(now);
     show();
 }
 
@@ -551,7 +596,7 @@ static bool fetchTides()
              "&application=TidesT5&begin_date=%04d%02d%02d%%20%02d:%02d&range=%d&datum=MLLW"
              "&station=%s&time_zone=gmt&units=english&interval=hilo&format=json",
              g.tm_year + 1900, g.tm_mon + 1, g.tm_mday, g.tm_hour, g.tm_min,
-             (TABLE_DAYS + 1) * 24 + 24, stationId.c_str());
+             (TABLE_DAYS + 2) * 24 + 24, stationId.c_str());
 
     // Public, read-only tide tables: the server certificate is not verified.
     WiFiClientSecure client;
@@ -601,7 +646,7 @@ static bool dataIsFresh()
     time_t now = time(nullptr);
     if (now - fetchedAt > FETCH_HOURS * 3600L) return false;
     // Still reaches into the last day of the table?
-    return events[eventCount - 1].when >= localMidnight(now, TABLE_DAYS - 1);
+    return events[eventCount - 1].when >= localMidnight(now, TABLE_DAYS + 1);
 }
 
 // ---------------------------------------------------------------- sleep ----
