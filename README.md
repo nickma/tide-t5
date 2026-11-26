@@ -51,6 +51,10 @@ The starting station, units and timings are in [src/config.h](src/config.h).
 wedge: thin at the top edge where the buttons are, deep at the bottom where the 18650 sits, so it
 stands on its bottom edge.
 
+`case/case.3mf` is a Bambu Studio project with both parts arranged on one plate. It has no printer
+or filament selected, so pick yours after opening it. It is exported by hand from the STLs, so
+re-export it after regenerating them.
+
 **The case is an unprinted draft.** Its dimensions were estimated, not measured. Check every value
 marked `measure` in [case/case.py](case/case.py) against your board, then regenerate:
 
